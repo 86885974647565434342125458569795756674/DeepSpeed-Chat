@@ -391,8 +391,8 @@ def parse_args():
         print(
             f"Tensorboard logs going to: {args.tensorboard_path}/step3_tensorboard_logs"
         )
-        writer = SummaryWriter(
-            f"{args.tensorboard_path}/step3_tensorboard_logs")
+        #writer = SummaryWriter(
+          #  f"{args.tensorboard_path}/step3_tensorboard_logs")
 
     # Validate settings
     if args.inference_tp_size > 1:
@@ -503,9 +503,9 @@ def main():
         args=args)
 
     #cyy
-    if args.local_rank==0:
-        handle=pre_pdb(args.local_rank,16000)
-        pdb.Pdb(stdin=handle,stdout=handle).set_trace()
+    #if args.local_rank==0:
+     #   handle=pre_pdb(args.local_rank,16000)
+      #  pdb.Pdb(stdin=handle,stdout=handle).set_trace()
     # Mixed Precision ZeRO++
     if args.enable_mixed_precision_lora:
         assert args.actor_lora_dim > 0, "Mixed Precision LoRA requires LoRA to be enabled"
@@ -531,133 +531,154 @@ def main():
     step_average_reward = 0.
     ema_reward_score = ExponentialMovingAverage()
 
-    for epoch in range(args.num_train_epochs):
-        print_rank_0(
-            f"Beginning of Epoch {epoch+1}/{args.num_train_epochs}, Total Generation Batches {min(len(prompt_train_dataloader), len(unsupervised_train_dataloader))}",
-            args.global_rank)
-        for step, (batch_prompt, batch_unsupervised) in enumerate(
-                zip(prompt_train_dataloader, unsupervised_train_dataloader)):
-
-            #cyy
-            #if args.local_rank==0:
-             #   handle = pre_pdb(args.local_rank,16000)
-              #  pdb.Pdb(stdin=handle,stdout=handle).set_trace()
-
-            batch_prompt = to_device(batch_prompt, device)
-
-            # prompts = batch_prompt['prompt']
-            # length = prompts.size(-1)
-            # if length > args.max_prompt_seq_len:
-            #     prompts = prompts[:, length - args.max_prompt_seq_len:]
-            #     raise ValueError("Prompt length is too long")
-
-            out = trainer.generate_experience(batch_prompt['prompt'],
-                                              batch_prompt['prompt_att_mask'],
-                                              step)
-
-            training_start = time.time()
-            if batch_unsupervised is not None:
-                batch_unsupervised = to_device(batch_unsupervised, device)
-                unsup_dataset = unsup_mini_dataset.add(batch_unsupervised)
-            else:
-                unsup_dataset = unsup_mini_dataset.add(
-                    [[None] * args.per_device_generation_batch_size])
-
-            exp_dataset = exp_mini_dataset.add(out)
-
-            if exp_dataset is not None:
-                inner_iter = 0
-                actor_loss_sum, critic_loss_sum, unsup_loss_sum = 0, 0, 0
-                average_reward = 0
-
-                if args.actor_gradient_checkpointing:
-                    rlhf_engine.actor.gradient_checkpointing_enable()
-
-                for ppo_ep in range(args.ppo_epochs):
-                    for i, (exp_data, unsup_data) in enumerate(
-                            zip(exp_dataset, unsup_dataset)):
-                        #cyy
-                        #if args.local_rank==0:
-                         #   handle = pre_pdb(args.local_rank,16000)
-                          #  pdb.Pdb(stdin=handle,stdout=handle).set_trace()
-
-                        actor_loss, critic_loss = trainer.train_rlhf(exp_data)
-                        actor_loss_sum += actor_loss.item()
-                        critic_loss_sum += critic_loss.item()
-                        average_reward += exp_data["rewards"].mean()
-
-                        if unsupervised_training_enabled:
-                            unsup_loss = trainer.train_unsupervised(
-                                unsup_data, args.unsup_coef)
-                            unsup_loss_sum += unsup_loss.item()
-
-                        inner_iter += 1
-                        if args.enable_ema:
-                            moving_average(rlhf_engine.actor,
-                                           rlhf_engine.actor_ema,
-                                           zero_stage=args.actor_zero_stage)
-
-                    random.shuffle(exp_dataset)
-                    random.shuffle(unsup_dataset)
-
-                end = time.time()
-                training_time = end - training_start
-                e2e_time = training_time + trainer.generate_time * args.generation_batches  # it is an approximation, we did not include, e.g., rw forward time etc
-
-                print_rank_0(
-                    f'Epoch: {epoch} | Step: {step} | PPO Epoch: {ppo_ep+1} | Actor Loss: {actor_loss_sum/inner_iter} | Critic Loss: {critic_loss_sum/inner_iter} | Unsupervised Loss: {unsup_loss_sum/inner_iter}',
-                    args.global_rank)
-                print_throughput_step3(rlhf_engine.actor.module,
-                                       rlhf_engine.critic, args, e2e_time,
-                                       trainer.generate_time, training_time,
-                                       args.global_rank)
-
-                average_reward = get_all_reduce_mean(average_reward).item()
-                step_average_reward += average_reward / args.gradient_accumulation_steps_actor
-                if (step + 1) % args.gradient_accumulation_steps_actor == 0:
-                    ema_reward_score.update(step_average_reward)
-                    step_average_reward = 0.
-
-                print_rank_0(
-                    f"Average reward score: {average_reward/inner_iter} | EMA reward score: {ema_reward_score.get()}",
-                    args.global_rank)
-                print_rank_0(
-                    "-------------------------------------------------------------------------------------",
-                    args.global_rank)
-
-                if args.enable_tensorboard and torch.distributed.get_rank(
-                ) == 0:
-                    writer.add_scalar('reward',
-                                      average_reward / inner_iter,
-                                      global_step=step)
-                    writer.add_scalar('actor_loss',
-                                      actor_loss.item(),
-                                      global_step=step)
-                    writer.add_scalar('actor_loss_sum',
-                                      actor_loss_sum,
-                                      global_step=step)
-                    writer.add_scalar('critic_loss',
-                                      critic_loss.item(),
-                                      global_step=step)
-                    writer.add_scalar('critic_loss_sum',
-                                      critic_loss_sum,
-                                      global_step=step)
-                    writer.flush()
-
-            if args.actor_gradient_checkpointing:
-                rlhf_engine.actor.gradient_checkpointing_disable()
-
-            actor_overflow, critic_overflow = trainer.get_overflow()
-
-            if not actor_overflow and not critic_overflow:
-                non_overflow_step_count += 1
-
-            if args.enable_test_mode and non_overflow_step_count == args.test_stop_step:
+    #cyy
+    cyy_stop1=5
+    with torch.profiler.profile(
+            schedule=torch.profiler.schedule(wait=1, warmup=1, active=2, repeat=1),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler('/share/log/rlhf'),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True
+    ) as prof:
+        for epoch in range(args.num_train_epochs):
+            if epoch==cyy_stop1:
                 break
-
-        if args.enable_test_mode:
-            break
-
+            prof.step()
+            #if args.local_rank==0:
+               # print("cyy_epoch{}".format(epoch))
+            print_rank_0(
+                f"Beginning of Epoch {epoch+1}/{args.num_train_epochs}, Total Generation Batches {min(len(prompt_train_dataloader), len(unsupervised_train_dataloader))}",
+                args.global_rank)
+            #cyy
+            cyy_step2=2
+            for step, (batch_prompt, batch_unsupervised) in enumerate(
+                    zip(prompt_train_dataloader, unsupervised_train_dataloader)):
+    
+                #cyy
+                #if args.local_rank==0:
+                 #   handle = pre_pdb(args.local_rank,16000)
+                  #  pdb.Pdb(stdin=handle,stdout=handle).set_trace()
+                if cyy_step2==step:
+                    break
+             #   if args.local_rank==0:
+              #      print("cyy_step{}".format(step))
+                batch_prompt = to_device(batch_prompt, device)
+    
+                # prompts = batch_prompt['prompt']
+                # length = prompts.size(-1)
+                # if length > args.max_prompt_seq_len:
+                #     prompts = prompts[:, length - args.max_prompt_seq_len:]
+                #     raise ValueError("Prompt length is too long")
+    
+                out = trainer.generate_experience(batch_prompt['prompt'],
+                                                  batch_prompt['prompt_att_mask'],
+                                                  step)
+    
+                training_start = time.time()
+                if batch_unsupervised is not None:
+                    batch_unsupervised = to_device(batch_unsupervised, device)
+                    unsup_dataset = unsup_mini_dataset.add(batch_unsupervised)
+                else:
+                    unsup_dataset = unsup_mini_dataset.add(
+                        [[None] * args.per_device_generation_batch_size])
+    
+                exp_dataset = exp_mini_dataset.add(out)
+    
+                if exp_dataset is not None:
+                    inner_iter = 0
+                    actor_loss_sum, critic_loss_sum, unsup_loss_sum = 0, 0, 0
+                    average_reward = 0
+    
+                    if args.actor_gradient_checkpointing:
+                        rlhf_engine.actor.gradient_checkpointing_enable()
+    
+                    for ppo_ep in range(args.ppo_epochs):
+                        for i, (exp_data, unsup_data) in enumerate(
+                                zip(exp_dataset, unsup_dataset)):
+                            #cyy
+                            #if args.local_rank==0:
+                             #   handle = pre_pdb(args.local_rank,16000)
+                              #  pdb.Pdb(stdin=handle,stdout=handle).set_trace()
+               #             if args.local_rank==0:
+                #                print("cyy_i{}".format(i))
+                            actor_loss, critic_loss = trainer.train_rlhf(exp_data)
+                            actor_loss_sum += actor_loss.item()
+                            critic_loss_sum += critic_loss.item()
+                            average_reward += exp_data["rewards"].mean()
+    
+                            if unsupervised_training_enabled:
+                                unsup_loss = trainer.train_unsupervised(
+                                    unsup_data, args.unsup_coef)
+                                unsup_loss_sum += unsup_loss.item()
+    
+                            inner_iter += 1
+                            if args.enable_ema:
+                                moving_average(rlhf_engine.actor,
+                                               rlhf_engine.actor_ema,
+                                               zero_stage=args.actor_zero_stage)
+    
+                        random.shuffle(exp_dataset)
+                        random.shuffle(unsup_dataset)
+    
+                    end = time.time()
+                    training_time = end - training_start
+                    e2e_time = training_time + trainer.generate_time * args.generation_batches  # it is an approximation, we did not include, e.g., rw forward time etc
+    
+                    print_rank_0(
+                        f'Epoch: {epoch} | Step: {step} | PPO Epoch: {ppo_ep+1} | Actor Loss: {actor_loss_sum/inner_iter} | Critic Loss: {critic_loss_sum/inner_iter} | Unsupervised Loss: {unsup_loss_sum/inner_iter}',
+                        args.global_rank)
+                    print_throughput_step3(rlhf_engine.actor.module,
+                                           rlhf_engine.critic, args, e2e_time,
+                                           trainer.generate_time, training_time,
+                                           args.global_rank)
+    
+                    average_reward = get_all_reduce_mean(average_reward).item()
+                    step_average_reward += average_reward / args.gradient_accumulation_steps_actor
+                    if (step + 1) % args.gradient_accumulation_steps_actor == 0:
+                        ema_reward_score.update(step_average_reward)
+                        step_average_reward = 0.
+    
+                    print_rank_0(
+                        f"Average reward score: {average_reward/inner_iter} | EMA reward score: {ema_reward_score.get()}",
+                        args.global_rank)
+                    print_rank_0(
+                        "-------------------------------------------------------------------------------------",
+                        args.global_rank)
+    
+                    if args.enable_tensorboard and torch.distributed.get_rank(
+                         ) == 0:
+                        pass
+                        #writer.add_scalar('reward',
+                         #                 average_reward / inner_iter,
+                          #                global_step=step)
+                        #writer.add_scalar('actor_loss',
+                           #               actor_loss.item(),
+                            #              global_step=step)
+                        #writer.add_scalar('actor_loss_sum',
+                         #                 actor_loss_sum,
+                          #                global_step=step)
+                        #writer.add_scalar('critic_loss',
+                         #                 critic_loss.item(),
+                          #                global_step=step)
+                        #writer.add_scalar('critic_loss_sum',
+                         #                 critic_loss_sum,
+                          #                global_step=step)
+                        #writer.flush()
+    
+                if args.actor_gradient_checkpointing:
+                    rlhf_engine.actor.gradient_checkpointing_disable()
+    
+                actor_overflow, critic_overflow = trainer.get_overflow()
+    
+                if not actor_overflow and not critic_overflow:
+                    non_overflow_step_count += 1
+    
+                if args.enable_test_mode and non_overflow_step_count == args.test_stop_step:
+                    break
+    
+            if args.enable_test_mode:
+                break
+    
     if args.output_dir is not None:
         print_rank_0('saving model ...')
         rlhf_engine.actor = convert_lora_to_linear_layer(rlhf_engine.actor)

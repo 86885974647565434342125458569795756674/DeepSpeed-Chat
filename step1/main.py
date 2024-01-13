@@ -359,28 +359,36 @@ def main():
         import time
 
         #cyy
-        cyy_step=1
+        cyy_step=4
 
-        for step, batch in enumerate(train_dataloader):
-
-            if step==cyy_step:
-                break
-   
-            start = time.time()
-            batch = to_device(batch, device)
-            outputs = model(**batch, use_cache=False)
-            loss = outputs.loss
-            if args.print_loss:
-                print(
-                    f"Epoch: {epoch}, Step: {step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
-                )
-            model.backward(loss)
-            model.step()
-            end = time.time()
-            if torch.distributed.get_rank() == 0:
-                print_throughput(model.model, args, end - start,
-                                 args.global_rank)
-
+        with torch.profiler.profile(
+                schedule=torch.profiler.schedule(wait=1, warmup=1, active=2, repeat=1),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler('/share/log/step1'),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True
+        ) as prof:
+    
+            for step, batch in enumerate(train_dataloader):
+    
+                if step==cyy_step:
+                    break
+                prof.step()
+                start = time.time()
+                batch = to_device(batch, device)
+                outputs = model(**batch, use_cache=False)
+                loss = outputs.loss
+                if args.print_loss:
+                    print(
+                        f"Epoch: {epoch}, Step: {step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
+                    )
+                model.backward(loss)
+                model.step()
+                end = time.time()
+                if torch.distributed.get_rank() == 0:
+                    print_throughput(model.model, args, end - start,
+                                     args.global_rank)
+    
         # Evaluate perplexity on the validation set.
         print_rank_0(
             f"***** Evaluating perplexity, Epoch {epoch+1}/{args.num_train_epochs} *****",

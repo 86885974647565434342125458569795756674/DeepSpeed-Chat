@@ -45,8 +45,9 @@ deepspeed --master_port 12346 main.py \
    --enable_hybrid_engine \
    --actor_zero_stage $ACTOR_ZERO_STAGE \
    --critic_zero_stage $CRITIC_ZERO_STAGE \
-   --enable_ema \
    --output_dir $OUTPUT \
+   --generation_batches 2 \
    --enable_tensorboard \
    --tensorboard_path $OUTPUT \
+   --num_train_epochs 10 \
     &> $OUTPUT/training.log
