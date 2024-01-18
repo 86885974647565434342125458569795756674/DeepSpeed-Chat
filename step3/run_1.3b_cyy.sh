@@ -8,8 +8,16 @@ CRITIC_MODEL_PATH=$2
 ACTOR_ZERO_STAGE=$3
 CRITIC_ZERO_STAGE=$4
 OUTPUT=$5
+T_W=$6
+MAIN=$7
+GEN_BS=$8
+
+
+if [ "$GEN_BS" == "" ]; then
+   GEN_BS=4
+
 if [ "$OUTPUT" == "" ]; then
-    OUTPUT=./output
+    OUTPUT=./output_1.3b-8
 fi
 if [ "$ACTOR_ZERO_STAGE" == "" ]; then
     ACTOR_ZERO_STAGE=2
@@ -27,17 +35,18 @@ if [ "$CRITIC_MODEL_PATH" == "" ]; then
 fi
 
 mkdir -p $OUTPUT
+mkdir -p $T_W
 
 Num_Padding_at_Beginning=1 # this is model related
 
 Actor_Lr=9.65e-6
 Critic_Lr=5e-6
 
-deepspeed --master_port 12346 main.py \
+deepspeed --master_port 12346 $MAIN \
    --actor_model_name_or_path $ACTOR_MODEL_PATH \
    --critic_model_name_or_path $CRITIC_MODEL_PATH \
-   --per_device_generation_batch_size 8 \
-   --per_device_training_batch_size 4 \
+   --per_device_generation_batch_size $GEN_BS \
+   --per_device_training_batch_size 1 \
    --actor_learning_rate ${Actor_Lr} \
    --critic_learning_rate ${Critic_Lr} \
    --actor_dropout 0.0 \
@@ -50,5 +59,5 @@ deepspeed --master_port 12346 main.py \
    --enable_tensorboard \
    --tensorboard_path $OUTPUT \
    --num_train_epochs 10 \
-   --tensorboard_web /share/log/350m \
+   --tensorboard_web $T_W \
     &> $OUTPUT/training.log
